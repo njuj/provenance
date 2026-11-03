@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # every scenario runs against a local fake npm / PyPI / GitHub: no network needed
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit and attack-scenario tests
+        run: python -m unittest discover -s tests -v
+
+  real-packages:
+    # the real registries and repositories: these must match their source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: check real releases end to end
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          pip install .
+          provenance --version
+          provenance npm:left-pad@1.3.0 npm:ms@2.1.3 npm:chalk pypi:requests pypi:flask --no-color

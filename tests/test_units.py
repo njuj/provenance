@@ -110,5 +110,22 @@ class CommandLine(unittest.TestCase):
         self.assertIn("NOT CHECKED", missing.stdout)
 
 
+class Attestations(unittest.TestCase):
+    def test_junk_certificates_never_raise(self):
+        import base64
+        import random
+        from fakeworld import fulcio_cert
+        from provenance import attest
+        good = fulcio_cert("acme/x", "e" * 40, "refs/tags/v1")
+        self.assertEqual(attest.from_certificate(good, "t").commit, "e" * 40)
+        rng = random.Random(5)
+        for i in range(2000):
+            bad = bytearray(good[:rng.randrange(1, len(good))] if i % 2 else good)
+            for _ in range(rng.randrange(1, 6)):
+                bad[rng.randrange(len(bad))] = rng.randrange(256)
+            doc = {"attestation_bundles": [{"attestations": [{"verification_material": {"certificate": base64.b64encode(bytes(bad)).decode()}}]}]}
+            attest.pypi_build(doc)                       # returns a Build or None, never raises
+
+
 if __name__ == "__main__":
     unittest.main()

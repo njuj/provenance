@@ -1,10 +1,11 @@
-"""Replay three real supply-chain attacks against a local fake npm / PyPI / GitHub and run provenance on
+"""Replay three real supply-chain attacks, and one technique, against a local fake npm / PyPI / GitHub and run provenance on
 them. The packages are reconstructions with inert stand-in payloads (no real malware), shaped like
 the public write-ups of each incident:
 
   flatmap-stream 0.1.1 (event-stream, 2018)  encrypted payload appended to the minified build only
   ua-parser-js 0.7.29 (2021)                 hijacked release with a preinstall script that fetched a miner
   ultralytics 8.3.41 (2024)                  poisoned release workflow: the PyPI files run a miner
+  starjacking (fictional names)              a package that advertises a famous repository it was not built from
 
     python examples/replay.py
 """
@@ -54,10 +55,17 @@ w.repo("ultralytics/ultralytics", "v8.3.41", {"ultralytics/utils/downloads.py": 
 w.pypi("ultralytics", "8.3.41", {"ultralytics/utils/downloads.py": evil, "ultralytics/__init__.py": "__version__ = '8.3.41'\n",
                                  "PKG-INFO": "Metadata-Version: 2.1\nName: ultralytics\n"}, repo="ultralytics/ultralytics")
 
+# starjacking: the package borrows a famous repository's stars; its signed build ran in a throwaway one
+STAR = "9d1e0c4b7a2f8e6d5c3b1a0f9e8d7c6b5a4f3e2d"
+fast = "def loads(s):\n    return __import__('json').loads(s)\n"
+w.repo("throwaway-4412/fastjson", STAR, {"fastjsonx/__init__.py": fast})
+w.pypi("fastjsonx", "2.1.0", {"fastjsonx/__init__.py": fast, "PKG-INFO": "Metadata-Version: 2.1\nName: fastjsonx\n"},
+       repo="famous-org/fastjson", built=("throwaway-4412/fastjson", STAR, "refs/tags/v2.1.0"))
+
 env = {**os.environ, "PROVENANCE_NPM": w.url, "PROVENANCE_PYPI": w.url, "PROVENANCE_CODELOAD": w.url,
        "PROVENANCE_GITHUB_API": w.url, "PYTHONIOENCODING": "utf-8"}
 args = [a for a in sys.argv[1:]] or ["--no-color"]
 r = subprocess.run([sys.executable, "-m", "provenance", "npm:flatmap-stream@0.1.1", "npm:ua-parser-js@0.7.29",
-                    "pypi:ultralytics==8.3.41", *args], cwd=ROOT, env=env)
+                    "pypi:ultralytics==8.3.41", "pypi:fastjsonx==2.1.0", *args], cwd=ROOT, env=env)
 w.close()
 sys.exit(r.returncode)

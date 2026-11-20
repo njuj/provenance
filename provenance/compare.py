@@ -70,7 +70,8 @@ class Report:
         return {"ecosystem": r.ecosystem, "name": r.name, "version": r.version, "artifact": r.artifact,
                 "repo": self.source.repo if self.source else r.repo,
                 "ref": self.source.ref if self.source else None, "ref_from": self.source.how if self.source else None,
-                "attested": r.attested, "verdict": self.verdict, "tried": self.tried,
+                "attested": r.attested, "workflow": r.workflow, "claimed_repo": r.claimed,
+                "verdict": self.verdict, "tried": self.tried,
                 "counts": {k: len(v) for k, v in self.piles.items()},
                 "findings": [f.to_dict() for f in sorted(self.findings, key=lambda f: RANK[f.severity])]}
 
@@ -151,6 +152,11 @@ def _inline_map(text: str) -> dict | None:
 
 def compare(rel: Release, src: Source | None, tried: list[str]) -> Report:
     rep = Report(rel, src, tried)
+    if rel.claimed:
+        rep.findings.append(Finding("high", "repository", "", "Built from a different repository than the one it names",
+                                    f"the package points to github.com/{rel.claimed}, but its signed build ran in "
+                                    f"github.com/{rel.repo}. The stars, history and reviews it borrows may not be its own "
+                                    f"(starjacking), so it is compared with the repository that actually built it"))
     if src is None:
         rep.findings.append(Finding("medium", "no-source", "", "No source to compare with",
                                     "the package could not be matched to a repository snapshot: " + ("; ".join(tried[:4]) or "no repository")))

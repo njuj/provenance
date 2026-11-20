@@ -49,7 +49,12 @@ def render(rep: compare.Report, min_sev: str, paint) -> str:
     if rep.source:
         ref = rep.source.ref[:12] if len(rep.source.ref) == 40 else rep.source.ref
         out.append(paint(f"   source  github.com/{rep.source.repo} @ {ref}  ({rep.source.how})", "2"))
+    if r.workflow:
+        out.append(paint(f"   built   {r.workflow.removeprefix('https://')}", "2"))
     label, color, why = VERDICT[rep.verdict]
+    serious = {f.kind for f in rep.findings if compare.RANK[f.severity] <= compare.RANK["high"]}
+    if serious == {"repository"}:
+        why = "its signed build ran in a different repository than the one it names"
     out.append(f"   {paint(label, color)}  {paint(why, '2')}")
     c = {k: len(v) for k, v in rep.piles.items()}
     out.append(paint(f"   {c['identical']} identical · {c['traced']} traced through source maps · {c['built']} built · "

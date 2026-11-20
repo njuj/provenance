@@ -34,6 +34,35 @@ def wheel(files: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
+def _der(tag: int, body: bytes) -> bytes:
+    n = len(body)
+    size = bytes([n]) if n < 128 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([tag]) + size + body
+
+
+def _oid(dotted: str) -> bytes:
+    a, b, *rest = map(int, dotted.split("."))
+    out = bytes([40 * a + b])
+    for n in rest:
+        chunk = [n & 0x7F]
+        while n > 0x7F:
+            n >>= 7
+            chunk.insert(0, 0x80 | (n & 0x7F))
+        out += bytes(chunk)
+    return _der(0x06, out)
+
+
+def fulcio_cert(repo: str, commit: str, ref: str, workflow: str = "release.yml") -> bytes:
+    """A certificate shaped like Fulcio's, carrying the build's repository, commit and ref (unsigned: never verified)."""
+    ext = {"1.3.6.1.4.1.57264.1.12": f"https://github.com/{repo}", "1.3.6.1.4.1.57264.1.13": commit,
+           "1.3.6.1.4.1.57264.1.14": ref, "1.3.6.1.4.1.57264.1.9": f"https://github.com/{repo}/.github/workflows/{workflow}@{ref}"}
+    exts = b"".join(_der(0x30, _oid(k) + _der(0x04, _der(0x0C, v.encode()))) for k, v in ext.items())
+    name = _der(0x30, b"")
+    tbs = _der(0x30, _der(0xA0, _der(0x02, b"\x02")) + _der(0x02, b"\x01") + _der(0x30, _oid("1.2.840.10045.4.3.3")) + name
+               + _der(0x30, b"") + name + _der(0x30, b"") + _der(0xA3, _der(0x30, exts)))
+    return _der(0x30, tbs + _der(0x30, _oid("1.2.840.10045.4.3.3")) + _der(0x03, b"\x00"))
+
+
 class World:
     def __init__(self):
         self.routes: dict[str, tuple[int, bytes]] = {}
@@ -68,7 +97,8 @@ class World:
         self.routes[f"/{repo}/tar.gz/{ref}"] = (200, targz(files, f"{repo.split('/')[1]}-{ref[:12]}"))
 
     def npm(self, name: str, version: str, files: dict[str, str], *, repo: str | None = "acme/pkg", directory: str = "",
-            git_head: str | None = None, attested_commit: str | None = None, removed: bool = False):
+            git_head: str | None = None, attested_commit: str | None = None, removed: bool = False,
+            built_repo: str | None = None):
         tarball = f"{self.url}/{name}/-/{name.split('/')[-1]}-{version}.tgz"
         meta = {"name": name, "version": version, "dist": {"tarball": tarball}}
         if repo:
@@ -78,7 +108,7 @@ class World:
         if attested_commit:
             meta["dist"]["attestations"] = {"url": "x", "provenance": {"predicateType": "https://slsa.dev/provenance/v1"}}
             statement = {"predicate": {"buildDefinition": {"resolvedDependencies": [
-                {"uri": f"git+https://github.com/{repo}@refs/heads/main", "digest": {"gitCommit": attested_commit}}]}}}
+                {"uri": f"git+https://github.com/{built_repo or repo}@refs/heads/main", "digest": {"gitCommit": attested_commit}}]}}}
             self.routes[f"/-/npm/v1/attestations/{name}@{version}"] = (200, json.dumps({"attestations": [
                 {"predicateType": "https://slsa.dev/provenance/v1",
                  "bundle": {"dsseEnvelope": {"payload": base64.b64encode(json.dumps(statement).encode()).decode()}}}]}).encode())
@@ -87,7 +117,8 @@ class World:
         self.routes[f"/{name}"] = (200, json.dumps(doc).encode())
         self.routes[tarball[len(self.url):]] = (200, targz(files, "package"))
 
-    def pypi(self, name: str, version: str, files: dict[str, str], *, repo: str = "acme/pylib", sdist: bool = True):
+    def pypi(self, name: str, version: str, files: dict[str, str], *, repo: str = "acme/pylib", sdist: bool = True,
+             built: tuple[str, str, str] | None = None):
         fname = f"{name}-{version}.tar.gz" if sdist else f"{name}-{version}-py3-none-any.whl"
         data = targz(files, f"{name}-{version}") if sdist else wheel(files)
         doc = {"info": {"name": name, "version": version, "project_urls": {"Source": f"https://github.com/{repo}"}},
@@ -95,3 +126,8 @@ class World:
         self.routes[f"/pypi/{name}/{version}/json"] = (200, json.dumps(doc).encode())
         self.routes[f"/pypi/{name}/json"] = (200, json.dumps(doc).encode())
         self.routes[f"/files/{fname}"] = (200, data)
+        if built:                                              # PEP 740 provenance from a trusted-publishing build
+            cert = base64.b64encode(fulcio_cert(*built)).decode()
+            prov = {"version": 1, "attestation_bundles": [{"publisher": {"kind": "GitHub", "repository": built[0], "workflow": "release.yml"},
+                                                           "attestations": [{"version": 1, "verification_material": {"certificate": cert}}]}]}
+            self.routes[f"/integrity/{name}/{version}/{fname}/provenance"] = (200, json.dumps(prov).encode())

@@ -173,6 +173,46 @@ class Scenarios(unittest.TestCase):
         rep = check("padkit")
         self.assertEqual(kinds(rep), [("critical", "changed")])
 
+    # ── signed builds ────────────────────────────────────────────────────
+    PYLIB = {"pylib/__init__.py": "def hello():\n    return 'hi'\n", "PKG-INFO": "Name: pylib\nVersion: 2.0.0\n"}
+
+    def test_pypi_attestation_names_the_commit(self):
+        self.w.repo("acme/pylib", "c" * 40, {"pylib/__init__.py": self.PYLIB["pylib/__init__.py"]})
+        self.w.pypi("pylib", "2.0.0", self.PYLIB, built=("acme/pylib", "c" * 40, "refs/tags/v2.0.0"))
+        rep = check("pypi:pylib==2.0.0")
+        self.assertEqual((rep.source.ref, rep.source.how), ("c" * 40, "signed PyPI attestation (Trusted Publishing)"))
+        self.assertTrue(rep.release.attested)
+        self.assertEqual(rep.release.workflow, "https://github.com/acme/pylib/.github/workflows/release.yml@refs/tags/v2.0.0")
+        self.assertEqual(rep.verdict, "matches")
+        self.assertEqual(kinds(rep, "low"), [])
+
+    def test_starjacking_on_pypi(self):
+        # advertises a famous repository; the signed build ran in another one
+        self.w.repo("evil/pylib", "d" * 40, {"pylib/__init__.py": self.PYLIB["pylib/__init__.py"]})
+        self.w.pypi("pylib", "2.0.0", self.PYLIB, repo="famous/pylib", built=("evil/pylib", "d" * 40, "refs/tags/v2.0.0"))
+        rep = check("pypi:pylib==2.0.0")
+        self.assertEqual(kinds(rep), [("high", "repository")])
+        self.assertIn("github.com/famous/pylib", rep.findings[0].detail)
+        self.assertEqual((rep.source.repo, rep.release.claimed), ("evil/pylib", "famous/pylib"))
+        self.assertEqual(rep.verdict, "differs")
+
+    def test_starjacking_on_npm(self):
+        self.w.repo("evil/padkit", "b" * 40, {"index.js": LIB, "package.json": json.dumps(PKG)})
+        self.w.npm("padkit", "1.0.0", {"index.js": LIB, "package.json": json.dumps(PKG)}, attested_commit="b" * 40,
+                   built_repo="evil/padkit")
+        rep = check("padkit")
+        self.assertEqual(kinds(rep), [("high", "repository")])
+        self.assertEqual(rep.to_dict()["claimed_repo"], "acme/pkg")
+
+    def test_a_renamed_repository_is_not_starjacking(self):
+        self.w.routes["/repos/Acme/old-name"] = (200, json.dumps({"full_name": "acme/pylib"}).encode())
+        self.w.routes["/repos/acme/pylib"] = (200, json.dumps({"full_name": "acme/pylib"}).encode())
+        self.w.repo("acme/pylib", "c" * 40, {"pylib/__init__.py": self.PYLIB["pylib/__init__.py"]})
+        self.w.pypi("pylib", "2.0.0", self.PYLIB, repo="Acme/old-name", built=("acme/pylib", "c" * 40, "refs/tags/v2.0.0"))
+        rep = check("pypi:pylib==2.0.0")
+        self.assertIsNone(rep.release.claimed)
+        self.assertEqual(kinds(rep, "low"), [])
+
     def test_wheel_layout_matches_a_src_layout_repository(self):
         code = "def add(a, b):\n    return a + b\n"
         self.w.repo("acme/pylib", "v1.2.0", {"src/mathy/__init__.py": code, "pyproject.toml": "[project]\nname = 'mathy'\n"})

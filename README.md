@@ -1,6 +1,6 @@
 # provenance
 
-[![Part of Cryptid Security](https://img.shields.io/badge/part_of-Cryptid%20Security-00ff9c?style=flat-square&labelColor=0d1117)](https://github.com/cryptid-security)
+[![Part of Cryptid Security](https://img.shields.io/badge/part_of-Cryptid%20Security-c6922f?style=flat-square&labelColor=0c1411)](https://github.com/cryptid-security)
 
 **Is the package on npm or PyPI the code in its repository?** provenance downloads a release and the exact commit it was built from, then compares them file by file. It reports the install scripts, dependencies and code that only appeared at publish time, and a package whose signed build ran in a different repository than the one it advertises (starjacking). It needs nothing but Python's standard library.
 
